@@ -8,7 +8,9 @@ Built to demonstrate core AI engineering infrastructure: chunking, vector embedd
 
 ## Live Demo
 
-> _Deploy your own in ~10 minutes. See [docs/setup.md](docs/setup.md)._
+**[rag-knowledge-base-peach.vercel.app](https://rag-knowledge-base-peach.vercel.app/)**
+
+> Deploy your own in ~10 minutes. See [docs/setup.md](docs/setup.md).
 
 ---
 
