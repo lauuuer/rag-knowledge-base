@@ -41,7 +41,7 @@ User submits question
         │
         ├─► Build prompt: system + retrieved context + question
         │
-        ├─► Claude claude-sonnet-4-5 generates answer
+        ├─► Claude claude-sonnet-4-6 generates answer
         │
         └─► Return answer + source citations (document name + chunk excerpt)
 ```
@@ -52,7 +52,7 @@ User submits question
 |---|---|---|
 | Vector store | Supabase pgvector | Managed Postgres — no separate infra, easy to self-host |
 | Embedding model | `text-embedding-3-small` (OpenAI) | Fast, cheap, 1536-dim, widely supported |
-| Generation model | `claude-sonnet-4-5` | Best reasoning for synthesis across multiple chunks |
+| Generation model | `claude-sonnet-4-6` | Best reasoning for synthesis across multiple chunks |
 | Chunk size | 512 tokens / 50 overlap | Balances context richness with retrieval precision |
 | Top-K retrieval | 5 chunks | Covers multi-section answers without exceeding context |
 | Source citation | Included in every response | Production systems always cite — builds trust, enables verification |
@@ -78,7 +78,7 @@ User submits question
 | Frontend + API | Next.js 14 (App Router) |
 | UI | Tailwind CSS |
 | Vector Database | Supabase + pgvector |
-| LLM | Anthropic Claude (`claude-sonnet-4-5`) |
+| LLM | Anthropic Claude (`claude-sonnet-4-6`) |
 | Embeddings | OpenAI (`text-embedding-3-small`) |
 | PDF Parsing | pdf-parse |
 | Deployment | Vercel (frontend) + Supabase (database) |
@@ -135,7 +135,7 @@ See [docs/setup.md](docs/setup.md) for full instructions.
 
 **Quick start:**
 ```bash
-git clone https://github.com/yourusername/rag-knowledge-base
+git clone https://github.com/lauuuer/rag-knowledge-base
 cd rag-knowledge-base
 npm install
 cp .env.example .env.local
