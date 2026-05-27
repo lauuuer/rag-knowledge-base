@@ -26,7 +26,7 @@ User uploads PDF/TXT
         │
         ├─► Chunk text (512 tokens, 50-token overlap)
         │
-        ├─► Generate embeddings (Claude claude-3-5-haiku-20241022)
+        ├─► Generate embeddings (OpenAI text-embedding-3-small)
         │
         └─► Store chunks + embeddings → Supabase (pgvector)
 
@@ -41,7 +41,7 @@ User submits question
         │
         ├─► Build prompt: system + retrieved context + question
         │
-        ├─► Claude claude-3-5-sonnet-20241022 generates answer
+        ├─► Claude claude-sonnet-4-5 generates answer
         │
         └─► Return answer + source citations (document name + chunk excerpt)
 ```
@@ -51,8 +51,8 @@ User submits question
 | Decision | Choice | Why |
 |---|---|---|
 | Vector store | Supabase pgvector | Managed Postgres — no separate infra, easy to self-host |
-| Embedding model | `claude-3-5-haiku-20241022` | Fast, cheap, high quality for retrieval |
-| Generation model | `claude-3-5-sonnet-20241022` | Best reasoning for synthesis across multiple chunks |
+| Embedding model | `text-embedding-3-small` (OpenAI) | Fast, cheap, 1536-dim, widely supported |
+| Generation model | `claude-sonnet-4-5` | Best reasoning for synthesis across multiple chunks |
 | Chunk size | 512 tokens / 50 overlap | Balances context richness with retrieval precision |
 | Top-K retrieval | 5 chunks | Covers multi-section answers without exceeding context |
 | Source citation | Included in every response | Production systems always cite — builds trust, enables verification |
@@ -78,7 +78,8 @@ User submits question
 | Frontend + API | Next.js 14 (App Router) |
 | UI | Tailwind CSS |
 | Vector Database | Supabase + pgvector |
-| LLM + Embeddings | Anthropic Claude API |
+| LLM | Anthropic Claude (`claude-sonnet-4-5`) |
+| Embeddings | OpenAI (`text-embedding-3-small`) |
 | PDF Parsing | pdf-parse |
 | Deployment | Vercel (frontend) + Supabase (database) |
 
