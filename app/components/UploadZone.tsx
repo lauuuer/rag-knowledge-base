@@ -78,7 +78,7 @@ export default function UploadZone({ onUploadSuccess }: UploadZoneProps) {
       >
         <input
           type="file"
-          accept=".pdf,.txt"
+          accept="application/pdf,text/plain,.pdf,.txt"
           className="hidden"
           onChange={onInputChange}
           disabled={isUploading}

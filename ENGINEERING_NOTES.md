@@ -1,125 +1,162 @@
 # Engineering Notes
 
-The reasoning behind the non-obvious choices in this project, the trade-offs each one carries, and the things I deliberately chose **not** to build. The goal here is honesty about constraints, not a feature list — for what the system does, see the [README](README.md).
+A record of the architecture and the reasoning behind it. The goal is to show the thinking, not just the result. For *what* the system does, see the [README](README.md); this document is about *why* it's built the way it is — including the things deliberately **not** built.
 
-This is a portfolio project running on free tiers. Several decisions only make sense in that light, and I've tried to say so rather than pretend the choices are universal.
-
----
-
-## 1. HNSW over ivfflat for the vector index
-
-**Choice:** `hnsw (embedding vector_cosine_ops) with (m = 16, ef_construction = 64)`, replacing the original `ivfflat (lists = 100)`.
-
-Both indexes are approximate nearest-neighbour. The practical difference is tuning. ivfflat partitions vectors into `lists` clusters and, at query time, scans `probes` of them — and `probes` defaults to **1**. With a single probe, the correct neighbour can sit in a cluster the search never visits, so recall is poor unless you tune `probes` and `lists` together and scale `lists` with row count. ivfflat also wants data present when the index is built to cluster well; this project creates the index in the schema, before any rows exist.
-
-HNSW is a layered proximity graph. It gives high recall **without** query-time tuning — there is no `probes` to get wrong — and it builds fine on an empty table.
-
-**Trade-off:** HNSW costs more to build and uses more memory/disk than ivfflat. For a read-heavy knowledge base where recall-without-tuning is exactly what you want, that's the right side of the trade. ivfflat starts to win at tens of millions of vectors, where HNSW's memory footprint hurts — not this project's scale.
-
-`ef_search` (default 40) can be raised per session for more recall at some latency cost; documented inline in `schema.sql`.
+This is a portfolio project running on free tiers, and a live public demo. That second fact turns out to drive the hardest engineering in it. If you only read one section, read the next one — it's where the real work lives.
 
 ---
 
-## 2. Hybrid search (vector + full-text) fused with RRF
+## 0. Isolating cost per person on a public demo — the decisions that took thought
 
-**Choice:** run vector similarity **and** Postgres full-text search, then fuse the two ranked lists with Reciprocal Rank Fusion inside a single `hybrid_search` SQL function.
+A RAG demo that anyone on the internet can use has a problem most tutorials ignore: **every query spends real money** on embeddings and model generation. The naïve public demo is one rotated-IP loop away from either a surprise bill or an exhausted budget that leaves the next visitor — say, a hiring manager — staring at an error. Getting this right meant accepting that the obvious defenses don't actually work, and that the real fix lives in three layers that each cover what the others can't.
 
-Vector search is strong on semantics ("car" finds "automobile") and weak on exact, rare tokens — error codes, proper nouns, acronyms, version numbers. The embedding of a rare string isn't distinctive, so it gets diluted. Full-text search is the opposite: exact on keywords, blind to paraphrase. Each method has a blind spot that is precisely the other's strength, so running both and merging covers both.
+### 0.1 The core mechanism: an atomic spend ledger keyed to verified identity
 
-**Why RRF specifically.** The problem with merging two searches is that their scores aren't comparable: cosine similarity is bounded `[0,1]`, `ts_rank` is unbounded. Adding them is comparing apples to oranges, and normalizing (min-max etc.) is fragile — it depends on each query's distribution and one outlier wrecks the scale. RRF sidesteps this by ignoring scores entirely and fusing on **rank**:
+Every paid request is gated by a per-user spend total, accumulated in Postgres and enforced in one atomic statement:
+
+```sql
+insert into usage (user_id, spent_micros, query_count)
+  values (p_user_id, greatest(p_cost_micros, 0), 1)
+on conflict (user_id) do update
+  set spent_micros = usage.spent_micros + greatest(p_cost_micros, 0)
+returning usage.spent_micros;
+```
+
+The invariant this enforces: **a user's running cost is read, incremented, and re-checked without a window in which two requests can both see a stale total.** The upsert *is* the design — the read-modify-write happens inside a single SQL round-trip, holding the row, so concurrency can't slip past the cap. Cost is stored in *micros* (millionths of a dollar) because a query costs a fraction of a cent and accumulating those as floats would drift.
+
+### 0.2 Why "verified identity" is the whole ballgame
+
+The cap above is only meaningful if `user_id` can't be forged or cheaply regenerated. This is the decision everything else hangs on.
+
+Suppose you do the naïve thing: identify users by an anonymous id the browser generates and stores in `localStorage` (the original design did exactly this — an `owner_id` header). Now the exact attack the cap was meant to stop costs nothing: clear `localStorage`, get a fresh identity, spend another cap's worth. The "limit" is a speed bump you reset with one keystroke. Per-IP rate limiting fails the same way for a different reason — serverless runs N instances each with its own in-memory counter, so the real limit is `limit × instances`, and it resets on cold start, and anyone serious rotates IPs anyway.
+
+The fix is to make identity *expensive to mint*. The system requires OAuth sign-in (Google or GitHub) via Supabase Auth, and the server derives the user id by **verifying the JWT**, not by trusting a header:
+
+```ts
+const { data } = await admin().auth.getUser(token) // verifies signature
+```
+
+A forged or expired token returns nothing and the route answers 401. Google's one-account-per-device friction is doing real anti-abuse work here: a determined attacker *can* create accounts, but the economics flipped from "run a loop" to "manufacture verified accounts," which filters essentially all opportunistic abuse. Both providers resolve to one Supabase identity, so the cap is shared across them with nothing extra to wire.
+
+### 0.3 Why the cap is checked twice — free rejection, then honest billing
+
+A single check isn't enough, and the reason is about *where the money is spent*. The route checks spend **before** calling any model (`check_spend`, a read — so an already-over-limit user is rejected without spending a cent) and records actual cost **after** (`record_spend`, the atomic write above). The pre-check is the cheap gate; the post-record is the truthful ledger. Billing the embedding cost even when retrieval returns nothing, and billing accumulated cost on a mid-stream crash, both close small holes where a user could otherwise get free work.
+
+### 0.4 Why the financial backstop lives outside the code
+
+No amount of application logic protects against a bug in the application logic. The hard ceiling — the thing that makes a surprise bill *impossible* rather than *unlikely* — is a provider-side spend cap on a **dedicated Anthropic workspace and OpenAI project** created solely for the demo. If every layer above failed at once, the worst case is the demo pausing when its isolated budget is hit; personal API usage is in a different workspace and never goes down. The per-user cap protects *availability* (one abuser can't starve everyone else); the provider cap protects against *ruin*. They solve different problems, which is why both exist.
+
+### 0.5 Defense in depth: RLS as the backstop to the backstop
+
+Row-Level Security scopes every row to `auth.uid()` at the database. The API uses the service-role key, which *bypasses* RLS — so why enable it? Because it costs nothing and closes the failure mode where a future route forgets its owner filter, or the anon key is ever used for a direct browser read. The verified user id, not application discipline, becomes the thing that scopes data.
+
+---
+
+## 1. Architecture overview
+
+```
+                         OAuth (Google / GitHub)
+                                  │  verified JWT
+                                  ▼
+  Browser ──auth'd fetch──▶  Next.js API routes (Vercel, serverless)
+   (React)   Bearer token        │
+                                  ├──▶ OpenAI  text-embedding-3-small  (embeddings)
+                                  ├──▶ Anthropic  Claude Sonnet  (generation, SSE)
+                                  └──▶ Supabase Postgres + pgvector
+                                         • documents / chunks  (HNSW + FTS)
+                                         • hybrid_search()  (vector ⊕ FTS via RRF)
+                                         • usage ledger + spend cap  (atomic)
+                                         • Row-Level Security
+```
+
+**Stack:** TypeScript · Next.js 14 (App Router, Node runtime) · Supabase Postgres + pgvector · OpenAI embeddings · Anthropic generation · Vercel hosting.
+
+**Core design principle:** retrieval quality and cost safety are both *correctness* problems, not features bolted on top — so each lives as close to the data as possible (fusion and spend enforcement in SQL, identity verified server-side) rather than in fragile client or middle-tier code.
+
+### Why hybrid retrieval is the centerpiece of the *retrieval* story
+
+Vector search alone looks like it works, then fails in production on exactly the queries users care about: exact error codes, proper nouns, version numbers. The embedding of a rare token isn't distinctive, so it gets diluted and out-ranked by a semantically "close" but wrong chunk. Section 2 is the retrieval engine that fixes that; Section 0 is the cost engine that lets it run in public. Those are the two hard parts.
+
+---
+
+## 2. The retrieval engine
+
+### 2.1 Hybrid search (vector + full-text) fused with RRF
+
+Run vector similarity **and** Postgres full-text search, then fuse the two ranked lists with Reciprocal Rank Fusion inside a single `hybrid_search` SQL function.
+
+Vector search is strong on semantics ("car" finds "automobile") and weak on exact, rare tokens. Full-text search is the opposite: exact on keywords, blind to paraphrase. Each method's blind spot is precisely the other's strength, so running both and merging covers both.
+
+**Why RRF specifically.** The two methods' scores aren't comparable: cosine similarity is bounded `[0,1]`, `ts_rank` is unbounded. Adding them compares apples to oranges; normalizing is fragile and one outlier wrecks the scale. RRF ignores scores entirely and fuses on **rank**:
 
 ```
 RRF(d) = Σ  1 / (k + rank_in_list(d))
 ```
 
-A document ranked #1 in vector contributes `1/(k+1)`; if it's also #5 in full-text it adds `1/(k+5)`. Documents that do well in *both* lists rise; `k=60` (the value from the original RRF paper) damps the weight of the very top ranks so a single first place can't dominate. It's scale-free by construction and needs no tuning.
+Documents that rank well in *both* lists rise; `k=60` (the original paper's value) damps the top ranks so a single first place can't dominate. Scale-free by construction, no tuning.
 
-**Why it lives in SQL.** Fusion needs the ranks from both lists, and `row_number() over (order by ...)` produces them naturally inside Postgres. Doing it in TypeScript would mean two round-trips (one query per method) plus client-side merging. In SQL it's one RPC with everything already in memory.
+**Why it lives in SQL.** Fusion needs ranks from both lists, and `row_number() over (order by ...)` produces them naturally in Postgres. Doing it in TypeScript would mean two round-trips plus client-side merging; in SQL it's one RPC with everything in memory.
 
-**Concrete payoff.** In testing, a vector-only search ranked a semantically-mediocre chunk (a cooking analogy that happened to have a non-orthogonal vector) *above* a chunk containing the exact error code being searched for. Hybrid + RRF moved the exact match to where it belonged. That gap is the whole reason the feature exists.
+**Concrete payoff.** In testing, vector-only search ranked a semantically-mediocre chunk (a cooking analogy with a non-orthogonal vector) *above* a chunk containing the exact error code being searched for. Hybrid + RRF moved the exact match to where it belonged. That gap is the whole reason the feature exists.
 
----
+### 2.2 HNSW over ivfflat for the vector index
 
-## 3. The NaN bug in the similarity threshold
+`hnsw (embedding vector_cosine_ops) with (m = 16, ef_construction = 64)`, replacing the original `ivfflat (lists = 100)`.
 
-This one is worth recording because it was a real bug found by testing against a real database, not a hypothetical.
+Both are approximate nearest-neighbour; the practical difference is tuning. ivfflat scans `probes` clusters at query time, and `probes` defaults to **1** — the correct neighbour can sit in a cluster the search never visits, so recall is poor unless you tune `probes`/`lists` together and scale with row count. ivfflat also wants data present at build time to cluster well; this schema creates the index before any rows exist. HNSW is a layered proximity graph: high recall **without** query-time tuning, and it builds fine on an empty table.
 
-The query path drops chunks below a minimum cosine similarity (default `0.3`) so that irrelevant questions return "I don't have enough information" before a generation call is ever made. The first implementation filtered with `(1 - distance) >= min_similarity`. It silently failed.
+**Trade-off:** HNSW costs more to build and more memory/disk. For a read-heavy knowledge base where recall-without-tuning is the goal, that's the right side of the trade. ivfflat wins at tens of millions of vectors — not this scale.
 
-Cosine distance is undefined for a zero-norm vector, and pgvector returns **NaN** for it. The trap: in Postgres, `NaN` compares as **equal to itself** and as **greater than or equal to any number** — so both `x = x` and `x >= threshold` let NaN through. An irrelevant query that should have returned zero rows returned five.
+### 2.3 Token-accurate chunking, and why not semantic chunking
 
-The fix is an explicit rejection: `(1 - distance) <> 'NaN'::float8`. Verified by standing up Postgres + pgvector locally and asserting that a degenerate query returns no rows. The pure-TypeScript mirror (`lib/rrf.ts`) carries the same guard via `Number.isNaN`, and there's a regression test for it in `tests/rrf.test.ts`.
+Count real tokens with `js-tiktoken` (`cl100k_base`, the tokenizer for `text-embedding-3-small`), replacing the `1 token ≈ 4 chars` approximation. That approximation is fine for prose and badly wrong for dense content: a 58-character JSON snippet is 24 real tokens, not the ~15 that `chars/4` predicts. Under-counting meant "512-token" chunks were sometimes 800+ real tokens, diluting the embedding and risking limits.
 
-Lesson, honestly stated: I would not have caught this by reading the code. It only showed up when run against the actual engine, whose NaN semantics differ from the IEEE behaviour I assumed.
+The strategy packs whole sentences until the next would exceed the limit, carries a sentence-tail overlap forward, and hard-splits a single oversized sentence (code, unpunctuated text). The invariant — no chunk ever exceeds `maxTokens` on any path — is tested.
 
----
-
-## 4. Token-accurate chunking, and why not semantic chunking
-
-**Choice:** count real tokens with `js-tiktoken` (`cl100k_base`, the tokenizer for `text-embedding-3-small`), replacing the `1 token ≈ 4 chars` approximation.
-
-The approximation is fine for prose and badly wrong for dense content. A 58-character JSON snippet is 24 real tokens; `chars/4` estimates 15 — a 60% underestimate. That means "512-token" chunks were sometimes 800+ real tokens of code or tables, which dilutes the embedding (a vector averaged over too much text is less distinctive) and risks limits. Counting tokens makes chunk size predictable.
-
-The strategy packs whole sentences until the next one would exceed the limit, carries a sentence-tail overlap into the next chunk, and falls back to a hard token-split for a single sentence that is itself oversized (code blocks, unpunctuated text). The invariant — no chunk ever exceeds `maxTokens` on any path — is tested.
-
-`js-tiktoken` is pure JS with no native binary, which matters: see note 6 for why that was a deciding factor.
-
-**Semantic chunking: evaluated, rejected.** Splitting on meaning shifts (embedding each sentence to detect topic boundaries) sounds impressive but adds an embedding call per sentence at ingestion time, a boundary-detection dependency, and a threshold to tune. For typical documents the quality gain over "token limit + sentence boundaries" is marginal. For a portfolio it's effort that signals over-engineering rather than judgment. Choosing not to build it is the more defensible call.
-
-**Tokenizer is model-specific.** `cl100k_base` is correct for the OpenAI embedding model. I did not abstract it behind a provider interface — the project is 100% OpenAI (see note 6), so abstraction would be speculative.
+**Semantic chunking: evaluated, rejected.** It adds an embedding call per sentence at ingestion, a boundary-detection dependency, and a threshold to tune, for a marginal quality gain over "token limit + sentence boundaries." Choosing not to build it is the more defensible call at this scope.
 
 ---
 
-## 5. Asynchronous ingestion on a free tier
+## 3. Problems hit and how they were solved
 
-**The real constraint.** Vercel's Hobby tier caps a function at **60 seconds** (with Fluid Compute, which is the current default path). The slow part of ingestion isn't PDF parsing — it's the embedding calls. A large PDF can push past 60s. But there's a nuance that shapes the whole decision: time spent waiting on I/O (the OpenAI and Supabase calls) does **not** count as active CPU time, and ingestion is almost entirely I/O.
+### Correctness — the NaN bug in the similarity threshold
 
-**Choice (deliberately the middle option).** The upload route does the fast, synchronous part — dedup check, text extraction — then inserts the document as `processing` and returns immediately. The heavy work (chunk → embed → store → flip status) runs *after* the response via Vercel's `waitUntil`. The front-end polls `/api/documents` every two seconds and stops once nothing is `processing`. No queue, no external worker, no extra service.
+**Irrelevant queries returned five chunks instead of zero.** The query path drops chunks below a minimum cosine similarity (`0.3`) so off-topic questions short-circuit to "I don't have enough information" before any generation call. The first filter, `(1 - distance) >= min_similarity`, silently failed: cosine distance is undefined for a zero-norm vector and pgvector returns **NaN**, and in Postgres `NaN` compares as *equal to itself* and *≥ any number* — so both `x = x` and `x >= threshold` let it through. → Fix: explicit rejection, `(1 - distance) <> 'NaN'::float8`, verified against a real local Postgres + pgvector. → Lesson: reading the code would never have caught this; it only surfaced run against the actual engine, whose NaN semantics differ from the IEEE behaviour I'd assumed. The pure-TS mirror carries the same guard via `Number.isNaN`, with a regression test.
 
-**Honest limitation.** `waitUntil` is still bound to the invocation's lifetime. This decouples the *user experience* from the embed step; it does **not** solve the pathological case of a PDF with hundreds of pages that genuinely needs more than 60s of wall-clock work. The correct tool for that is Vercel Workflows (durable execution that pauses/resumes/keeps state for minutes to months), which I left out on purpose — for this project it would be infrastructure for a problem the project doesn't have.
+### Deploy — the live demo's git connection broke after a force-push
 
-**Dedup.** A SHA-256 of file **content** (not the filename — names change, content is the identity) goes in a `UNIQUE` column. Re-uploading the same bytes returns the existing document instead of duplicating chunks. The application checks the hash before inserting, but there's a race: two simultaneous uploads of the same file both pass the check. The unique constraint catches it at the database, and `insertDocument` handles the `23505` violation by returning the existing row rather than throwing a 500. Defense at both layers.
+**Vercel reported "the provided GitHub repository can't be found" and refused to redeploy.** Root cause: rewriting history with `--force` orphaned the commit Vercel held as its deployment reference, so it was looking for a commit that no longer existed. → Fix: reconnect the repo in Project Settings → Git, then trigger a fresh deploy with an empty commit rather than re-running the stale "Redeploy" (which still pointed at the dead commit). → Lesson: a force-push isn't just a local concern; anything holding a commit SHA downstream (CI, hosting) has to be re-pointed.
 
----
+### Local dev — the file picker didn't filter to PDF/TXT on Windows
 
-## 6. Pluggable local embeddings: built, then deliberately removed
-
-I prototyped an `EmbeddingProvider` interface with two implementations — OpenAI (`text-embedding-3-small`, 1536-dim) and a free local one (`@xenova/transformers`, `all-MiniLM-L6-v2`, 384-dim) — with correct mean-pooling + L2-normalization, a lazy pipeline singleton, a dimension guard, a second 384-dim schema, and a `next.config` to externalize the native binaries. It worked.
-
-Then I removed it.
-
-**Why.** The stated goal was "free embeddings." But embeddings cost about $0.02 per million tokens — the savings are rounding error. The real cost of the local provider was *complexity*: a native binary (`onnxruntime`/`sharp`) that's awkward to build, a second schema, and a per-dimension choice at upload time. I was adding an indirection layer for a second provider that would never actually run. That's speculative abstraction — and an abstraction with exactly one real implementation is just indirection.
-
-Keeping the note here because the decision is the point: I knew how to build it, built it, and chose to throw it away because the complexity-versus-benefit trade didn't close. Knowing when *not* to abstract is the same skill as knowing when to.
-
-(There is a related observation worth making explicit: switching embedding providers isn't just a code change. Vector dimension is part of the schema — a `vector(N)` column has fixed N — so a different provider means re-indexing everything. That's intentional and worth knowing, not a hidden gotcha.)
+**The OS file dialog opened to "custom files," forcing a manual switch to "all files."** Root cause: `accept=".pdf,.txt"` (bare extensions) isn't reliably mapped to a labelled filter by every OS. → Fix: include MIME types alongside extensions, `accept="application/pdf,text/plain,.pdf,.txt"`. → Note: `accept` is only a *hint* to the native picker — never a security control. Real validation is server-side (`ALLOWED_TYPES`), and was already there.
 
 ---
 
-## 7. Streaming: hand-rolled SSE instead of a framework
+## 4. Resilience / correctness decisions baked into the code
 
-The query route streams over Server-Sent Events with named events: `sources` first (the retrieved chunks are known before generation starts, so they render immediately), then one `delta` per token from Claude, then `done` — or `error` if generation fails mid-stream, since the HTTP status is already committed to 200 by then and can't be changed.
-
-I used raw SSE rather than the Vercel `ai` SDK on purpose. RAG streams a *mixed* payload: structured sources up front plus text token-by-token. SSE's named events model that directly, and writing the protocol by hand demonstrates that I understand the mechanism rather than hiding it behind a hook. This is a defensible choice in both directions — the `ai` SDK would be the reasonable production pick — and I'd call it a conscious trade rather than a clear winner.
-
----
-
-## 8. Testing: the minimum with the highest value
-
-14 Vitest tests, ~1 second, no Postgres and no network. They target pure, non-trivial logic — the chunker (invariants: no chunk over the limit on any path, overlap, hard-split, token-vs-chars, empty input) and rank fusion (a doc strong in both lists ranks first, an exact-keyword match gets rescued above a semantically-mediocre one, the threshold, the NaN regression, `matchCount`, the effect of `k`).
-
-**The honest part.** RRF runs in SQL in production. To unit-test it without spinning up Postgres in CI, I extracted the fusion into a pure function (`lib/rrf.ts`) that mirrors the SQL. That means the logic exists in two places and could drift. Mitigated by: a comment at the top of the file flagging it as a mirror, and `scripts/test_hybrid_search.sql` as a manual integration check against the real SQL. It's a trade I'd make again for a portfolio — instant, dependency-free tests — but it's a trade, not a free lunch.
-
-**What I didn't test, and why:** the route handlers and the front-end. Testing them would mean mocking Supabase, Anthropic, and Vercel — at which point the test largely exercises the mock, not my logic. Low value for the effort here.
+- **Atomic spend upsert.** Prevents the lost-update race where two concurrent requests both read an under-cap total and both proceed (§0.1).
+- **JWT verified, not trusted.** A forged/expired token yields no user and a 401, rather than scoping to an attacker-supplied id (§0.2).
+- **Cost billed on every exit path.** Embedding cost is recorded even when retrieval returns zero chunks, and accumulated cost is flushed on a mid-stream error — closing free-work holes.
+- **Content-hash dedup with a DB unique constraint.** SHA-256 of file *content* (names change, content is identity) in a `UNIQUE` column. The app checks before inserting, but two simultaneous uploads can both pass the check; the constraint catches it and `insertDocument` handles the `23505` violation by returning the existing row instead of a 500. Defense at both layers.
+- **Owner-scoped deletes.** `deleteDocument` filters by `(id, ownerId)`, so a request for someone else's document deletes nothing and returns 404 — ownership is in the WHERE clause, not a separate check that could be skipped.
+- **SSE `error` event after status commit.** Once the stream's 200 is flushed the HTTP status can't change, so mid-stream failures are signalled as a named `error` event the client renders, not a silent truncation.
 
 ---
 
-## What I'd change to scale
+## 5. Known trade-offs (scope constraints)
 
-Honest list, roughly in order of when each would start to matter:
+- **`waitUntil` for async ingestion, not a durable queue.** Chosen because the slow part (embedding calls) is I/O, which doesn't count against Vercel's CPU budget, and `waitUntil` decouples the user experience from the embed step with no extra service. The seam to scale it: a real durable queue (Vercel Workflows / QStash / Inngest), needed once a document genuinely requires more than 60s of wall-clock work — the one pathological case `waitUntil` does not solve.
+- **RRF mirrored in a pure TS function for testing.** Production fusion runs in SQL; `lib/rrf.ts` mirrors it so the logic is unit-testable without Postgres in CI. The cost: the logic exists twice and could drift. Mitigated by a header comment flagging the mirror and `scripts/test_hybrid_search.sql` as a manual integration check. Worth it for instant, dependency-free tests — but a real trade, not a free lunch.
+- **Hand-rolled SSE over the Vercel `ai` SDK.** RAG streams a *mixed* payload — structured sources up front, then text token-by-token — which SSE's named events model directly, and hand-writing it demonstrates the mechanism. Defensible in both directions; the SDK would be a reasonable production pick. A conscious trade, not a clear winner.
+- **Single embedding provider, no abstraction.** A pluggable `EmbeddingProvider` interface (OpenAI + local `@xenova/transformers`) was built, then *removed*: embeddings cost ~$0.02/M tokens, so "free local embeddings" saved rounding error while adding a native binary, a second schema, and a per-upload dimension choice. An abstraction with one real implementation is just indirection. Knowing when *not* to abstract is the same skill as knowing when to. (Related: vector dimension is part of the schema — `vector(N)` is fixed-N — so switching providers means re-indexing everything. Intentional, worth knowing.)
 
-- **Ingestion queue.** Replace `waitUntil` with a real durable queue (Vercel Workflows, or QStash/Inngest) once documents are large enough to exceed the function budget. This is the first thing that breaks at scale.
-- **Re-ranking.** Add a cross-encoder re-ranker after RRF for higher precision on the final top-k. Skipped here because it adds a model call per query and the quality gain doesn't justify it at this scale.
-- **Evaluation harness.** A retrieval-quality eval set (questions with known-relevant chunks) to measure recall/precision changes instead of eyeballing them. The honest gap in this project: I validated the *logic* of HNSW and hybrid search, but recall at real scale is only knowable with real data and a real eval set.
-- **Multi-tenancy.** Row-level security and per-user document scoping. The current design is single-instance.
-- **Chunking revisited.** Semantic or layout-aware chunking becomes worth its cost once the corpus is large and heterogeneous (mixed PDFs, tables, code) — not before.
+---
+
+## 6. What I'd do next (production hardening)
+
+- **Ingestion queue.** Replace `waitUntil` with durable execution once documents exceed the function budget — the first thing that breaks at scale. The seam is already clean: ingestion is decoupled from the response, so only the runner changes.
+- **Cross-encoder re-ranking.** Add a re-ranker after RRF for higher top-k precision. Skipped now because it's a model call per query for a gain that doesn't justify itself at this scale; RRF's output is already the natural input to it.
+- **Retrieval-quality eval harness.** A labelled question→relevant-chunk set to measure recall/precision changes instead of eyeballing them. The honest gap: the *logic* of HNSW and hybrid search is validated, but recall at real scale is only knowable with real data and a real eval set.
+- **Rolling spend windows.** The per-user cap is currently a lifetime demo budget. A `window_start` column reset in `record_spend` would turn it into a daily allowance — a small change the ledger is already shaped for.
+- **Layout-aware chunking.** Semantic or table/code-aware splitting becomes worth its cost once the corpus is large and heterogeneous — not before.
