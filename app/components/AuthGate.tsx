@@ -101,26 +101,41 @@ export function UserBadge() {
   const { session } = useSession()
   const [spent, setSpent] = useState<string | null>(null)
 
+  // Keep the cap separate from the spent value so an event that only carries
+  // the new spend total can update the display without refetching the cap.
+  const [capLabel, setCapLabel] = useState<string | null>(null)
+
   useEffect(() => {
     if (!session) return
 
+    // Cache-busted read of the authoritative total. The query param guarantees a
+    // unique URL per call so no HTTP/CDN layer can hand back a stale response.
     const refresh = () =>
-      fetch('/api/usage', {
+      fetch(`/api/usage?t=${Date.now()}`, {
         cache: 'no-store',
         headers: { Authorization: `Bearer ${session.access_token}` },
       })
         .then(r => (r.ok ? r.json() : null))
-        .then(d => d && setSpent(`${d.spent} / $${d.capUsd.toFixed(2)}`))
+        .then(d => {
+          if (!d) return
+          setSpent(d.spent)
+          setCapLabel(`$${d.capUsd.toFixed(2)}`)
+        })
         .catch(() => {})
 
     // Initial load.
     refresh()
 
-    // Re-read after each answered question. QueryInterface dispatches this when
-    // the stream's `done` event arrives, so the header stays in sync without a
-    // page reload.
-    window.addEventListener('usage-updated', refresh)
-    return () => window.removeEventListener('usage-updated', refresh)
+    // After each answered question, prefer the spend total the server already
+    // streamed in the `done` event — it's fresh and bypasses any caching. Then
+    // also refetch as a reconciliation backstop.
+    const onUsage = (e: Event) => {
+      const next = (e as CustomEvent).detail?.spent
+      if (typeof next === 'string') setSpent(next)
+      refresh()
+    }
+    window.addEventListener('usage-updated', onUsage)
+    return () => window.removeEventListener('usage-updated', onUsage)
   }, [session])
 
   if (!session) return null
@@ -129,7 +144,11 @@ export function UserBadge() {
 
   return (
     <div className="flex items-center gap-3 text-xs text-gray-500">
-      {spent && <span className="hidden sm:inline tabular-nums">{spent}</span>}
+      {spent && (
+        <span className="hidden sm:inline tabular-nums">
+          {spent}{capLabel ? ` / ${capLabel}` : ''}
+        </span>
+      )}
       <span className="hidden md:inline max-w-[160px] truncate">{email}</span>
       <button
         onClick={() => supabaseBrowser().auth.signOut()}
