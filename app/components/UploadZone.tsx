@@ -14,55 +14,89 @@ interface UploadZoneProps {
   onUploadSuccess: (doc: UploadedDoc) => void
 }
 
+// How many files can be uploaded at once. Adjust as needed.
+const MAX_FILES = 10
+
 export default function UploadZone({ onUploadSuccess }: UploadZoneProps) {
   const [isDragging, setIsDragging] = useState(false)
   const [isUploading, setIsUploading] = useState(false)
+  const [progress, setProgress] = useState<{ done: number; total: number } | null>(null)
   const [status, setStatus] = useState<{ type: 'success' | 'error'; message: string } | null>(null)
 
-  const handleFile = useCallback(
-    async (file: File) => {
-      setIsUploading(true)
-      setStatus(null)
-
+  // Uploads a single file. Returns true on success, or an error message.
+  const uploadOne = useCallback(
+    async (file: File): Promise<true | string> => {
       const formData = new FormData()
       formData.append('file', file)
-
       try {
         const res = await ownedFetch('/api/upload', { method: 'POST', body: formData })
         const data = await res.json()
-
         if (!res.ok) {
-          setStatus({ type: 'error', message: data.error || 'Upload failed.' })
-          return
+          return data.error || 'Upload failed.'
         }
-
-        const message = data.deduplicated
-          ? `"${data.document.name}" already ingested — reusing existing document`
-          : `"${data.document.name}" uploaded — processing…`
-        setStatus({ type: 'success', message })
         onUploadSuccess(data.document)
+        return true
       } catch {
-        setStatus({ type: 'error', message: 'Network error. Please try again.' })
-      } finally {
-        setIsUploading(false)
+        return 'Network error.'
       }
     },
     [onUploadSuccess]
+  )
+
+  const handleFiles = useCallback(
+    async (fileList: FileList) => {
+      let files = Array.from(fileList)
+      if (files.length === 0) return
+
+      let capNotice = ''
+      if (files.length > MAX_FILES) {
+        capNotice = ` (max ${MAX_FILES} at a time — ${files.length - MAX_FILES} extra file(s) skipped)`
+        files = files.slice(0, MAX_FILES)
+      }
+
+      setIsUploading(true)
+      setStatus(null)
+      setProgress({ done: 0, total: files.length })
+
+      const failures: string[] = []
+      for (let i = 0; i < files.length; i++) {
+        const result = await uploadOne(files[i])
+        if (result !== true) failures.push(`"${files[i].name}": ${result}`)
+        setProgress({ done: i + 1, total: files.length })
+      }
+
+      const ok = files.length - failures.length
+      if (failures.length === 0) {
+        setStatus({
+          type: 'success',
+          message: `${ok} file(s) uploaded — processing…${capNotice}`,
+        })
+      } else if (ok === 0) {
+        setStatus({ type: 'error', message: `All uploads failed. ${failures[0]}` })
+      } else {
+        setStatus({
+          type: 'error',
+          message: `${ok} uploaded, ${failures.length} failed. ${failures[0]}${capNotice}`,
+        })
+      }
+
+      setIsUploading(false)
+      setProgress(null)
+    },
+    [uploadOne]
   )
 
   const onDrop = useCallback(
     (e: React.DragEvent) => {
       e.preventDefault()
       setIsDragging(false)
-      const file = e.dataTransfer.files[0]
-      if (file) handleFile(file)
+      if (e.dataTransfer.files?.length) handleFiles(e.dataTransfer.files)
     },
-    [handleFile]
+    [handleFiles]
   )
 
   const onInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0]
-    if (file) handleFile(file)
+    if (e.target.files?.length) handleFiles(e.target.files)
     e.target.value = ''
   }
 
@@ -78,7 +112,8 @@ export default function UploadZone({ onUploadSuccess }: UploadZoneProps) {
       >
         <input
           type="file"
-          accept="application/pdf,text/plain,.pdf,.txt"
+          multiple
+          accept="application/pdf,text/plain,text/markdown,.pdf,.txt,.md,.markdown"
           className="hidden"
           onChange={onInputChange}
           disabled={isUploading}
@@ -88,11 +123,13 @@ export default function UploadZone({ onUploadSuccess }: UploadZoneProps) {
             d="M9 13h6m-3-3v6m5 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
         </svg>
         {isUploading ? (
-          <p className="text-sm text-indigo-600 font-medium">Processing…</p>
+          <p className="text-sm text-indigo-600 font-medium">
+            {progress ? `Uploading ${progress.done}/${progress.total}…` : 'Processing…'}
+          </p>
         ) : (
           <>
-            <p className="text-sm text-gray-600">Drop a file or <span className="text-indigo-600 font-medium">click to browse</span></p>
-            <p className="text-xs text-gray-400 mt-1">PDF or TXT · max 10 MB</p>
+            <p className="text-sm text-gray-600">Drop files or <span className="text-indigo-600 font-medium">click to browse</span></p>
+            <p className="text-xs text-gray-400 mt-1">PDF, TXT or MD · max 10 MB · up to {MAX_FILES} files</p>
           </>
         )}
       </label>

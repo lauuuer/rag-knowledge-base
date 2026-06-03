@@ -21,7 +21,7 @@ create extension if not exists vector;
 create table documents (
   id           uuid primary key default gen_random_uuid(),
   name         text not null,
-  file_type    text not null check (file_type in ('pdf', 'txt')),
+  file_type    text not null check (file_type in ('pdf', 'txt', 'md')),
   size_bytes   integer not null,
   chunk_count  integer not null default 0,
   status       text not null default 'processing'

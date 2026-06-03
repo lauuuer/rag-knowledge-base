@@ -17,7 +17,8 @@ export const runtime = 'nodejs'
 export const maxDuration = 60
 
 const MAX_FILE_SIZE = 10 * 1024 * 1024 // 10 MB
-const ALLOWED_TYPES = ['application/pdf', 'text/plain']
+const ALLOWED_TYPES = ['application/pdf', 'text/plain', 'text/markdown', 'text/x-markdown']
+const ALLOWED_EXTENSIONS = ['.pdf', '.txt', '.md', '.markdown']
 const UPLOAD_LIMIT = 20 // uploads per minute per IP (secondary, best-effort layer)
 const WINDOW_MS = 60_000
 
@@ -58,9 +59,13 @@ export async function POST(req: NextRequest) {
     if (!file) {
       return NextResponse.json({ error: 'No file provided' }, { status: 400 })
     }
-    if (!ALLOWED_TYPES.includes(file.type)) {
+    const lowerName = file.name.toLowerCase()
+    const extOk = ALLOWED_EXTENSIONS.some(ext => lowerName.endsWith(ext))
+    const typeOk = file.type ? ALLOWED_TYPES.includes(file.type) : false
+    // Browsers often leave file.type empty for .md, so accept on extension too.
+    if (!typeOk && !extOk) {
       return NextResponse.json(
-        { error: 'Unsupported file type. Only PDF and TXT are accepted.' },
+        { error: 'Unsupported file type. Only PDF, TXT and MD are accepted.' },
         { status: 400 }
       )
     }
@@ -89,8 +94,9 @@ export async function POST(req: NextRequest) {
       })
     }
 
+    const isPdf = file.type === 'application/pdf' || lowerName.endsWith('.pdf')
     let rawText: string
-    if (file.type === 'application/pdf') {
+    if (isPdf) {
       rawText = await extractTextFromPDF(buffer)
     } else {
       rawText = buffer.toString('utf-8')
@@ -102,7 +108,11 @@ export async function POST(req: NextRequest) {
       )
     }
 
-    const fileType = file.type === 'application/pdf' ? 'pdf' : 'txt'
+    const fileType = isPdf
+      ? 'pdf'
+      : lowerName.endsWith('.md') || lowerName.endsWith('.markdown')
+        ? 'md'
+        : 'txt'
     const documentId = await insertDocument({
       name: file.name,
       file_type: fileType,
