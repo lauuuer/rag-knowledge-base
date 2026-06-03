@@ -13,6 +13,7 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import type { Session } from '@supabase/supabase-js'
 import { supabaseBrowser } from '@/lib/supabase-browser'
+import { getAccessToken } from '@/lib/auth-client'
 
 function useSession(): { session: Session | null; loading: boolean } {
   const [session, setSession] = useState<Session | null>(null)
@@ -108,20 +109,27 @@ export function UserBadge() {
   useEffect(() => {
     if (!session) return
 
-    // Cache-busted read of the authoritative total. The query param guarantees a
-    // unique URL per call so no HTTP/CDN layer can hand back a stale response.
-    const refresh = () =>
-      fetch(`/api/usage?t=${Date.now()}`, {
-        cache: 'no-store',
-        headers: { Authorization: `Bearer ${session.access_token}` },
-      })
-        .then(r => (r.ok ? r.json() : null))
-        .then(d => {
-          if (!d) return
-          setSpent(d.spent)
-          setCapLabel(`$${d.capUsd.toFixed(2)}`)
+    // Cache-busted read of the authoritative total. Crucially, we grab a FRESH
+    // access token per call (same source the query path uses) instead of the
+    // token captured in `session` state — that captured token goes stale when
+    // Supabase silently auto-refreshes, which made /api/usage return 401, the
+    // refetch yield null, and the displayed value freeze forever.
+    const refresh = async () => {
+      const token = await getAccessToken()
+      if (!token) return
+      try {
+        const r = await fetch(`/api/usage?t=${Date.now()}`, {
+          cache: 'no-store',
+          headers: { Authorization: `Bearer ${token}` },
         })
-        .catch(() => {})
+        if (!r.ok) return
+        const d = await r.json()
+        setSpent(d.spent)
+        setCapLabel(`$${d.capUsd.toFixed(2)}`)
+      } catch {
+        /* transient; leave last good value in place */
+      }
+    }
 
     // Initial load.
     refresh()
