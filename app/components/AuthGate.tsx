@@ -101,50 +101,66 @@ export function AuthGate({ children }: { children: ReactNode }) {
 export function UserBadge() {
   const { session } = useSession()
   const [spent, setSpent] = useState<string | null>(null)
-
-  // Keep the cap separate from the spent value so an event that only carries
-  // the new spend total can update the display without refetching the cap.
   const [capLabel, setCapLabel] = useState<string | null>(null)
 
-  useEffect(() => {
-    if (!session) return
+  // Depend only on WHETHER we're logged in, not on the session object identity.
+  // Supabase recreates the session object on every token refresh / tab focus,
+  // and keying the effect on the object made it re-run (and re-fetch) many times
+  // per minute — a refresh storm. Each in-flight fetch could resolve out of
+  // order and overwrite the fresh value from the `done` event with a stale one,
+  // which is what froze the number. A boolean only flips on real login/logout.
+  const isAuthed = !!session
 
-    // Cache-busted read of the authoritative total. Crucially, we grab a FRESH
-    // access token per call (same source the query path uses) instead of the
-    // token captured in `session` state — that captured token goes stale when
-    // Supabase silently auto-refreshes, which made /api/usage return 401, the
-    // refetch yield null, and the displayed value freeze forever.
+  useEffect(() => {
+    if (!isAuthed) {
+      setSpent(null)
+      setCapLabel(null)
+      return
+    }
+
+    // Monotonic guard: only the most recently *issued* request may write state.
+    // Late-arriving older responses are dropped, killing the race entirely.
+    let latest = 0
+    let cancelled = false
+
     const refresh = async () => {
+      const seq = ++latest
       const token = await getAccessToken()
-      if (!token) return
+      if (!token || cancelled) return
       try {
         const r = await fetch(`/api/usage?t=${Date.now()}`, {
           cache: 'no-store',
           headers: { Authorization: `Bearer ${token}` },
         })
-        if (!r.ok) return
+        if (!r.ok || cancelled || seq !== latest) return
         const d = await r.json()
+        if (cancelled || seq !== latest) return
         setSpent(d.spent)
         setCapLabel(`$${d.capUsd.toFixed(2)}`)
       } catch {
-        /* transient; leave last good value in place */
+        /* transient; keep last good value */
       }
     }
 
-    // Initial load.
     refresh()
 
-    // After each answered question, prefer the spend total the server already
-    // streamed in the `done` event — it's fresh and bypasses any caching. Then
-    // also refetch as a reconciliation backstop.
+    // After each answered question, trust the spend the server streamed in the
+    // `done` event (fresh, no round-trip), then reconcile with one refresh.
     const onUsage = (e: Event) => {
       const next = (e as CustomEvent).detail?.spent
-      if (typeof next === 'string') setSpent(next)
+      if (typeof next === 'string') {
+        // Bump the sequence so any in-flight refresh can't clobber this value.
+        latest++
+        setSpent(next)
+      }
       refresh()
     }
     window.addEventListener('usage-updated', onUsage)
-    return () => window.removeEventListener('usage-updated', onUsage)
-  }, [session])
+    return () => {
+      cancelled = true
+      window.removeEventListener('usage-updated', onUsage)
+    }
+  }, [isAuthed])
 
   if (!session) return null
 
