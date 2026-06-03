@@ -103,12 +103,23 @@ export function UserBadge() {
 
   useEffect(() => {
     if (!session) return
-    fetch('/api/usage', {
-      headers: { Authorization: `Bearer ${session.access_token}` },
-    })
-      .then(r => (r.ok ? r.json() : null))
-      .then(d => d && setSpent(`${d.spent} / $${d.capUsd.toFixed(2)}`))
-      .catch(() => {})
+
+    const refresh = () =>
+      fetch('/api/usage', {
+        headers: { Authorization: `Bearer ${session.access_token}` },
+      })
+        .then(r => (r.ok ? r.json() : null))
+        .then(d => d && setSpent(`${d.spent} / $${d.capUsd.toFixed(2)}`))
+        .catch(() => {})
+
+    // Initial load.
+    refresh()
+
+    // Re-read after each answered question. QueryInterface dispatches this when
+    // the stream's `done` event arrives, so the header stays in sync without a
+    // page reload.
+    window.addEventListener('usage-updated', refresh)
+    return () => window.removeEventListener('usage-updated', refresh)
   }, [session])
 
   if (!session) return null

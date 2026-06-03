@@ -92,6 +92,16 @@ export default function QueryInterface() {
           return next
         })
 
+        // When the stream finishes, the server sends the updated spend total.
+        // Broadcast it so the budget indicator in the header can refresh without
+        // a page reload. We pass the value along so the badge can show it
+        // immediately instead of making another round-trip.
+        if (eventName === 'done') {
+          window.dispatchEvent(
+            new CustomEvent('usage-updated', { detail: { spent: payload.spent } })
+          )
+        }
+
         if (eventName === 'delta' || eventName === 'sources') {
           bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
         }
