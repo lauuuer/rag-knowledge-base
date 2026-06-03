@@ -107,6 +107,17 @@ export default function QueryInterface() {
         }
       }
 
+      // Parse one raw SSE record ("event: x\ndata: y") and dispatch it.
+      const parseRecord = (record: string) => {
+        let eventName = 'message'
+        const dataLines: string[] = []
+        for (const line of record.split('\n')) {
+          if (line.startsWith('event:')) eventName = line.slice(6).trim()
+          else if (line.startsWith('data:')) dataLines.push(line.slice(5).trim())
+        }
+        if (dataLines.length) applyEvent(eventName, dataLines.join('\n'))
+      }
+
       // Read the stream and split it into SSE records (separated by a blank line).
       while (true) {
         const { done, value } = await reader.read()
@@ -117,16 +128,15 @@ export default function QueryInterface() {
         while ((sep = buffer.indexOf('\n\n')) !== -1) {
           const record = buffer.slice(0, sep)
           buffer = buffer.slice(sep + 2)
-
-          let eventName = 'message'
-          const dataLines: string[] = []
-          for (const line of record.split('\n')) {
-            if (line.startsWith('event:')) eventName = line.slice(6).trim()
-            else if (line.startsWith('data:')) dataLines.push(line.slice(5).trim())
-          }
-          if (dataLines.length) applyEvent(eventName, dataLines.join('\n'))
+          parseRecord(record)
         }
       }
+
+      // The stream can close without a trailing blank line, leaving the last
+      // record (often the `done` event carrying the spend total) stuck in the
+      // buffer. Flush it so that final event is never dropped.
+      buffer += decoder.decode()
+      if (buffer.trim().length) parseRecord(buffer)
     } catch (err) {
       setMessages(prev => [...prev, { role: 'assistant', content: 'Network error. Please try again.' }])
     } finally {
