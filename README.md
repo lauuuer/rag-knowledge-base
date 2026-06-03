@@ -78,6 +78,7 @@ User submits question
 | Generation model | `claude-sonnet-4-6` | Strong reasoning for synthesis across multiple retrieved chunks |
 | Streaming | Hand-rolled SSE (`sources` + `delta` events) | RAG streams a mixed payload (sources known up front + text token-by-token); SSE's named events fit that better than a raw text stream |
 | Ingestion | Async via `waitUntil` + `status` column + dedup hash | Decouples the upload response from the heavy embed step on a free-tier-friendly model; no queue or external worker |
+| Conversation state | Stateless — each question is independent, no history sent to the model | Keeps per-query cost bounded (so the spend cap stays honest) and reinforces the answer-only-from-context grounding contract. Trade-off: follow-up questions don't resolve references. See Engineering Notes §5 |
 
 ---
 
@@ -158,6 +159,8 @@ At query time the system runs a single `hybrid_search` RPC that:
 3. Fuses the two ranked lists with Reciprocal Rank Fusion and returns the top results.
 
 The retrieved chunks are passed to Claude with explicit instructions to answer only from the provided context, cite the source document for each claim, and say it doesn't have enough information rather than hallucinate.
+
+Each question is answered independently — the system is stateless by design, sending only the current question and its retrieved chunks to the model, with no conversation history. This keeps per-query cost bounded and the answers strictly grounded in retrieved context; the trade-off is that follow-up questions referencing earlier turns won't resolve. See Engineering Notes §5 for the full reasoning and the seam to add memory.
 
 ---
 
