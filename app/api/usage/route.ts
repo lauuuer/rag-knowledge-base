@@ -21,6 +21,12 @@ export async function GET(req: NextRequest) {
       overCap: status.overCap,
       blocked: status.blocked,
       email: user.email,
+      // TEMPORARY DEBUG — remove after diagnosis. Exposes exactly which user id
+      // the route resolved the token to, and the raw micros the ledger returned
+      // for that id. If _debug_userId here differs from the id whose row shows
+      // 59391 in SQL, the auth layer is resolving a different identity.
+      _debug_userId: user.id,
+      _debug_totalMicros: status.totalMicros,
     },
     // This value changes after every question, so it must never be cached —
     // by the browser, by Next's data cache, or by any CDN layer in front.
