@@ -101,48 +101,44 @@ export default function UploadZone({ onUploadSuccess }: UploadZoneProps) {
   }
 
   return (
-    <div className="space-y-3">
+    <>
       <label
         onDragOver={e => { e.preventDefault(); setIsDragging(true) }}
         onDragLeave={() => setIsDragging(false)}
         onDrop={onDrop}
-        className={`flex flex-col items-center justify-center w-full h-36 border-2 border-dashed rounded-lg cursor-pointer transition-colors
-          ${isDragging ? 'border-indigo-400 bg-indigo-50' : 'border-gray-300 hover:border-indigo-300 hover:bg-gray-50'}
-          ${isUploading ? 'pointer-events-none opacity-60' : ''}`}
+        className={`dropzone${isDragging ? ' drag' : ''}${isUploading ? ' busy' : ''}`}
       >
         <input
           type="file"
           multiple
           accept="application/pdf,text/plain,text/markdown,.pdf,.txt,.md,.markdown"
-          className="hidden"
+          hidden
           onChange={onInputChange}
           disabled={isUploading}
         />
-        <svg className="w-8 h-8 text-gray-400 mb-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
-            d="M9 13h6m-3-3v6m5 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-        </svg>
+        <div className="up-ic">
+          {isUploading ? (
+            <span className="spin" style={{ borderColor: 'rgba(255,255,255,0.25)', borderTopColor: 'var(--cyan)' }} />
+          ) : (
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M12 16V4M7 9l5-5 5 5" />
+              <path d="M5 20h14" />
+            </svg>
+          )}
+        </div>
         {isUploading ? (
-          <p className="text-sm text-indigo-600 font-medium">
-            {progress ? `Uploading ${progress.done}/${progress.total}…` : 'Processing…'}
-          </p>
+          <div className="t">{progress ? `Uploading ${progress.done}/${progress.total}…` : 'Processing…'}</div>
         ) : (
           <>
-            <p className="text-sm text-gray-600">Drop files or <span className="text-indigo-600 font-medium">click to browse</span></p>
-            <p className="text-xs text-gray-400 mt-1">PDF, TXT or MD · max 10 MB · up to {MAX_FILES} files</p>
+            <div className="t">Drop files or <b>click to browse</b></div>
+            <div className="h">PDF · TXT · MD — max 10 MB</div>
           </>
         )}
       </label>
 
       {status && (
-        <p className={`text-sm px-3 py-2 rounded ${
-          status.type === 'success'
-            ? 'bg-green-50 text-green-700'
-            : 'bg-red-50 text-red-700'
-        }`}>
-          {status.message}
-        </p>
+        <p className={`upload-status ${status.type}`}>{status.message}</p>
       )}
-    </div>
+    </>
   )
 }

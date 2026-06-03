@@ -31,7 +31,8 @@ export default function AuthCallback() {
   }, [])
 
   return (
-    <div className="min-h-screen flex items-center justify-center text-sm text-gray-500">
+    <div className="center-screen">
+      <span className="spin" />
       Signing you in…
     </div>
   )

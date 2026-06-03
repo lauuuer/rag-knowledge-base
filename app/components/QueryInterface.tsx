@@ -16,11 +16,22 @@ interface Message {
   sources?: Source[]
 }
 
+const SUGGESTIONS = [
+  'Summarize the key points',
+  'What does it say about pricing?',
+  'List every deadline mentioned',
+]
+
 export default function QueryInterface() {
   const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput] = useState('')
   const [isLoading, setIsLoading] = useState(false)
-  const bottomRef = useRef<HTMLDivElement>(null)
+  const scrollRef = useRef<HTMLDivElement>(null)
+
+  const scrollToBottom = () => {
+    const el = scrollRef.current
+    if (el) el.scrollTop = el.scrollHeight
+  }
 
   const sendQuestion = async () => {
     const question = input.trim()
@@ -29,6 +40,7 @@ export default function QueryInterface() {
     setInput('')
     setMessages(prev => [...prev, { role: 'user', content: question }])
     setIsLoading(true)
+    requestAnimationFrame(scrollToBottom)
 
     // Index of the assistant message we are about to stream into.
     let assistantIndex = -1
@@ -103,7 +115,7 @@ export default function QueryInterface() {
         }
 
         if (eventName === 'delta' || eventName === 'sources') {
-          bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+          scrollToBottom()
         }
       }
 
@@ -144,73 +156,104 @@ export default function QueryInterface() {
     }
   }
 
+  const isEmpty = messages.length === 0
+
   return (
-    <div className="flex flex-col h-full">
-      <div className="flex-1 overflow-y-auto space-y-4 pb-4">
-        {messages.length === 0 && (
-          <div className="text-center text-gray-400 text-sm pt-12">
-            <p>Upload a document, then ask anything about it.</p>
-          </div>
-        )}
-
-        {messages.map((msg, i) => (
-          <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-            <div className={`max-w-[85%] space-y-2 flex flex-col ${msg.role === 'user' ? 'items-end' : 'items-start'}`}>
-              <div className={`rounded-2xl px-4 py-2.5 text-sm leading-relaxed whitespace-pre-wrap
-                ${msg.role === 'user' ? 'bg-indigo-600 text-white' : 'bg-gray-100 text-gray-800'}`}>
-                {msg.content}
-              </div>
-
-              {msg.sources && msg.sources.length > 0 && (
-                <div className="space-y-1 w-full">
-                  <p className="text-xs text-gray-400 font-medium">Sources</p>
-                  {msg.sources.map((s, j) => (
-                    <div key={j} className="bg-white border border-gray-200 rounded-lg px-3 py-2 text-xs text-gray-600">
-                      <div className="flex items-center justify-between mb-1">
-                        <span className="font-medium text-gray-800 truncate">{s.document_name}</span>
-                        <span className="text-gray-400 shrink-0 ml-2">{Math.round(s.similarity * 100)}% match</span>
-                      </div>
-                      <p className="text-gray-500 line-clamp-2">{s.excerpt}</p>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          </div>
-        ))}
-
-        {isLoading && messages[messages.length - 1]?.role === 'user' && (
-          <div className="flex justify-start">
-            <div className="bg-gray-100 rounded-2xl px-4 py-2.5 text-sm">
-              <span className="inline-flex gap-1">
-                <span className="animate-bounce">·</span>
-                <span className="animate-bounce [animation-delay:0.1s]">·</span>
-                <span className="animate-bounce [animation-delay:0.2s]">·</span>
-              </span>
-            </div>
-          </div>
-        )}
-
-        <div ref={bottomRef} />
+    <div className="chat">
+      <div className="chat-head">
+        <h2 className="panel-title">Ask a question</h2>
+        <span className={`pill${isLoading ? ' live' : ''}`}>
+          <span className="d" />
+          {isLoading ? 'Retrieving…' : 'Idle · grounded answers only'}
+        </span>
       </div>
 
-      <div className="flex gap-2 pt-3 border-t border-gray-100">
-        <input
-          type="text"
-          value={input}
-          onChange={e => setInput(e.target.value)}
-          onKeyDown={e => e.key === 'Enter' && !e.shiftKey && sendQuestion()}
-          placeholder="Ask a question about your documents…"
-          disabled={isLoading}
-          className="flex-1 rounded-xl border border-gray-200 px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent disabled:opacity-50"
-        />
-        <button
-          onClick={sendQuestion}
-          disabled={isLoading || !input.trim()}
-          className="bg-indigo-600 text-white px-4 py-2.5 rounded-xl text-sm font-medium hover:bg-indigo-700 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-        >
-          Ask
-        </button>
+      <div className="chat-scroll" ref={scrollRef}>
+        {isEmpty ? (
+          <div className="chat-empty">
+            <div className="welcome">
+              <div className="glow-ic">
+                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z" />
+                </svg>
+              </div>
+              <h2>What do you want to know?</h2>
+              <p>Upload a document on the left, then ask anything about it. Answers stream in with the exact source cited.</p>
+              <div className="suggest">
+                {SUGGESTIONS.map(s => (
+                  <button key={s} className="chip" onClick={() => setInput(s)}>
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+                      <circle cx="11" cy="11" r="7" />
+                      <path d="m20 20-3-3" strokeLinecap="round" />
+                    </svg>
+                    {s}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+        ) : (
+          <div className="msgs">
+            {messages.map((msg, i) => (
+              <div key={i} className={`msg ${msg.role}`}>
+                <div className="msg-col">
+                  <div className="bubble">{msg.content}</div>
+
+                  {msg.sources && msg.sources.length > 0 && (
+                    <div className="sources">
+                      <div className="s-label">
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                          <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" strokeLinecap="round" strokeLinejoin="round" />
+                          <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" strokeLinecap="round" strokeLinejoin="round" />
+                        </svg>
+                        Sources
+                      </div>
+                      {msg.sources.map((s, j) => (
+                        <div key={j} className="source">
+                          <div className="s-top">
+                            <span className="s-name">{s.document_name}</span>
+                            <span className="s-match">{Math.round(s.similarity * 100)}% match</span>
+                          </div>
+                          <p className="s-ex">{s.excerpt}</p>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            ))}
+
+            {isLoading && messages[messages.length - 1]?.role === 'user' && (
+              <div className="msg assistant">
+                <div className="msg-col">
+                  <div className="bubble" style={{ padding: 0 }}>
+                    <div className="typing"><span /><span /><span /></div>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      <div className="composer">
+        <div className="inputwrap">
+          <input
+            type="text"
+            value={input}
+            onChange={e => setInput(e.target.value)}
+            onKeyDown={e => e.key === 'Enter' && !e.shiftKey && sendQuestion()}
+            placeholder="Ask a question about your documents…"
+            disabled={isLoading}
+          />
+          <button className="send" onClick={sendQuestion} disabled={isLoading || !input.trim()}>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M5 12h14" />
+              <path d="m13 6 6 6-6 6" />
+            </svg>
+          </button>
+        </div>
+        <div className="foot">Press <span className="k">Enter</span> to ask · answers are grounded only in your uploaded documents</div>
       </div>
     </div>
   )

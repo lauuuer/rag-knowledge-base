@@ -13,7 +13,18 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en">
-      <body>{children}</body>
+      <body>
+        {/* Ambient backdrop — shared across every screen */}
+        <div className="ambient" aria-hidden="true">
+          <div className="orb cyan" />
+          <div className="orb violet" />
+          <div className="orb mid" />
+        </div>
+        <div className="gridlines" aria-hidden="true" />
+        <div className="grain" aria-hidden="true" />
+
+        <div className="app-root">{children}</div>
+      </body>
     </html>
   )
 }

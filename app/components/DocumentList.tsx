@@ -34,42 +34,45 @@ export default function DocumentList({ documents, onDelete }: DocumentListProps)
   }
 
   if (documents.length === 0) {
-    return <p className="text-sm text-gray-400 text-center py-4">No documents uploaded yet.</p>
+    return (
+      <div className="empty-docs">
+        <div className="box">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M14 3v4a1 1 0 0 0 1 1h4" />
+            <path d="M17 21H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h7l5 5v11a2 2 0 0 1-2 2z" />
+          </svg>
+        </div>
+        <p><b>No documents yet</b>Upload a file to build your knowledge base.</p>
+      </div>
+    )
   }
 
   return (
-    <ul className="divide-y divide-gray-100">
+    <ul className="doclist">
       {documents.map(doc => (
-        <li key={doc.id} className="flex items-center justify-between py-2.5 text-sm">
-          <div className="flex items-center gap-2 min-w-0">
-            <span className="text-xs font-mono bg-gray-100 text-gray-500 px-1.5 py-0.5 rounded uppercase">
-              {doc.file_type}
-            </span>
-            <span className="truncate text-gray-800">{doc.name}</span>
-            {doc.status === 'processing' && (
-              <span className="text-amber-600 shrink-0 inline-flex items-center gap-1">
-                <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse" />
-                processing
-              </span>
-            )}
-            {doc.status === 'ready' && (
-              <span className="text-gray-400 shrink-0">{doc.chunk_count} chunks</span>
-            )}
-            {doc.status === 'failed' && (
-              <span className="text-red-500 shrink-0" title={doc.error_message || 'Processing failed'}>
-                failed
-              </span>
-            )}
-          </div>
+        <li key={doc.id} className="docrow">
+          <span className="ftype">{doc.file_type}</span>
+          <span className="dname" title={doc.name}>{doc.name}</span>
+
+          {doc.status === 'processing' && (
+            <span className="dstatus processing"><span className="pdot" />processing</span>
+          )}
+          {doc.status === 'ready' && (
+            <span className="dstatus ready">{doc.chunk_count} chunks</span>
+          )}
+          {doc.status === 'failed' && (
+            <span className="dstatus failed" title={doc.error_message || 'Processing failed'}>failed</span>
+          )}
+
           <button
             onClick={() => handleDelete(doc.id)}
             disabled={deleting === doc.id}
-            className="ml-3 text-gray-400 hover:text-red-500 transition-colors disabled:opacity-40 shrink-0"
+            className="del-btn"
             title="Delete document"
           >
             {deleting === doc.id ? '…' : (
-              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
               </svg>
             )}
           </button>
