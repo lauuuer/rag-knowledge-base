@@ -144,16 +144,18 @@ export function UserBadge() {
 
     refresh()
 
-    // After each answered question, trust the spend the server streamed in the
-    // `done` event (fresh, no round-trip), then reconcile with one refresh.
+    // After each answered question, trust ONLY the spend total the server
+    // streamed in the `done` event. It is computed AFTER record_spend commits,
+    // so it is authoritative and fresh. We deliberately do NOT refetch here:
+    // a follow-up /api/usage can hit a replica that hasn't caught the write yet
+    // and return the pre-question value a beat later, which is exactly the
+    // "jumps up then snaps back" flicker. No refetch, no race.
     const onUsage = (e: Event) => {
       const next = (e as CustomEvent).detail?.spent
       if (typeof next === 'string') {
-        // Bump the sequence so any in-flight refresh can't clobber this value.
-        latest++
+        latest++ // invalidate any in-flight initial-load refresh
         setSpent(next)
       }
-      refresh()
     }
     window.addEventListener('usage-updated', onUsage)
     return () => {

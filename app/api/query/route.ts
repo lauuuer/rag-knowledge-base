@@ -121,13 +121,13 @@ export async function POST(req: NextRequest) {
 
         if (chunks.length === 0) {
           // No model call; just bill the embedding and finish.
-          await recordSpend(ownerId, accumulatedMicros)
+          const status = await recordSpend(ownerId, accumulatedMicros)
           controller.enqueue(
             sse('delta', {
               text: "I don't have enough information in the uploaded documents to answer this.",
             })
           )
-          controller.enqueue(sse('done', {}))
+          controller.enqueue(sse('done', { spent: microsToUsdString(status.totalMicros) }))
           controller.close()
           return
         }
