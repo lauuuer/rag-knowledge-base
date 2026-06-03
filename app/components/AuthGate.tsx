@@ -106,6 +106,7 @@ export function UserBadge() {
 
     const refresh = () =>
       fetch('/api/usage', {
+        cache: 'no-store',
         headers: { Authorization: `Bearer ${session.access_token}` },
       })
         .then(r => (r.ok ? r.json() : null))

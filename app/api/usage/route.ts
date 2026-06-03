@@ -13,12 +13,17 @@ export async function GET(req: NextRequest) {
   }
 
   const status = await precheckSpend(user.id)
-  return NextResponse.json({
-    spent: microsToUsdString(status.totalMicros),
-    capUsd: SPEND_CAP_USD,
-    remainingMicros: Math.max(0, SPEND_CAP_MICROS - status.totalMicros),
-    overCap: status.overCap,
-    blocked: status.blocked,
-    email: user.email,
-  })
+  return NextResponse.json(
+    {
+      spent: microsToUsdString(status.totalMicros),
+      capUsd: SPEND_CAP_USD,
+      remainingMicros: Math.max(0, SPEND_CAP_MICROS - status.totalMicros),
+      overCap: status.overCap,
+      blocked: status.blocked,
+      email: user.email,
+    },
+    // This value changes after every question, so it must never be cached —
+    // by the browser, by Next's data cache, or by any CDN layer in front.
+    { headers: { 'Cache-Control': 'no-store, max-age=0' } }
+  )
 }
